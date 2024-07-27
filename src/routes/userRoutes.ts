@@ -1,24 +1,39 @@
 import { Hono } from "hono";
-import { signin, signup } from "../controllers/authController";
+import {
+  forgotPassword,
+  protect,
+  resetPassword,
+  restrictTo,
+  signin,
+  signup,
+  updatePassword
+} from "../controllers/authController";
+import {
+  deleteUser,
+  DelMyUser,
+  getMe,
+  getUser,
+  getUsers,
+  updateMyUser,
+  updateUser
+} from "../controllers/userController";
+import { Role } from "../types";
 
 const userRouter = new Hono();
 
-userRouter.get("/", (c) => {
-  return c.text("Hello Hono!");
-});
+userRouter.get("/", getUsers);
 userRouter.post("/signup", signup);
 userRouter.post("/signin", signin);
-// userRouter.patch("/update-password", protect, updatePassword);
-// userRouter.patch("/update-me", protect, updateMyUser);
-// userRouter.delete("/delete-me", protect, DelMyUser);
-// userRouter.get("/get-me", protect, getMe, getUser);
-// userRouter.post("/forgotpassword", forgotPassword);
-// userRouter.patch("/resetpassword/:token", resetPassword);
+userRouter.patch("/update-password", protect, updatePassword);
+userRouter.patch("/update-me", protect, updateMyUser);
+userRouter.delete("/delete-me", protect, DelMyUser);
+userRouter.get("/get-me", protect, getMe);
+userRouter.post("/forgotpassword", forgotPassword);
+userRouter.patch("/resetpassword/:token", resetPassword);
 
-// userRouter
-//   .route("/:id")
-//   .patch(protect, restrictTo(Role.Admin), updateUser)
-//   .delete(protect, restrictTo(Role.Admin), deleteUser)
-//   .get(protect, restrictTo(Role.Admin), getUser);
+userRouter
+  .get("/:id", protect, restrictTo(Role.Admin), getUser)
+  .patch("/:id", protect, restrictTo(Role.Admin), updateUser)
+  .delete("/:id", protect, restrictTo(Role.Admin), deleteUser);
 
 export default userRouter;

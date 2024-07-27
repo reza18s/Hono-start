@@ -1,7 +1,7 @@
 import { Schema, model } from "mongoose";
-import { compare, hash } from "bcryptjs";
-import { createHash, randomBytes } from "crypto";
+import { randomBytes } from "crypto";
 import { IModel, IUserDocument, Role } from "../types";
+import { CryptoHasher } from "bun";
 export const userSchema = new Schema<IUserDocument>({
   name: { type: String, required: [true, "name is required!"] },
 
@@ -47,7 +47,8 @@ export const userSchema = new Schema<IUserDocument>({
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
 
-  this.password = await hash(this.password, 12);
+  this.password = await Bun.password.hash(this.password);
+  // @ts-ignore
   this.passwordConfirm = undefined;
   next();
 });
@@ -64,7 +65,7 @@ userSchema.methods.correctPassword = async function (
   candidatePassword: string,
   userPassword: string
 ): Promise<boolean> {
-  return await compare(candidatePassword, userPassword);
+  return await Bun.password.verify(candidatePassword, userPassword);
 };
 userSchema.methods.changedPasswordAfter = function (JWT: number): boolean {
   if (this.passwordChangedAt) {
@@ -76,7 +77,9 @@ userSchema.methods.changedPasswordAfter = function (JWT: number): boolean {
 
 userSchema.methods.createPasswordRestToken = function () {
   const restToken = randomBytes(32).toString("hex");
-  this.passwordRestToken = createHash("sha256").update(restToken).digest("hex");
+  this.passwordRestToken = new CryptoHasher("sha256")
+    .update(restToken)
+    .digest("hex");
   this.passwordRestExpires = Date.now() + 10 * 60 * 1000;
   return restToken;
 };

@@ -15,7 +15,8 @@ export default [
       eqeqeq: "off",
       "no-unused-vars": "off",
       "@typescript-eslint/no-unused-vars": "warn",
-      "prefer-const": ["error", { ignoreReadBeforeAssign: true }]
+      "prefer-const": ["error", { ignoreReadBeforeAssign: true }],
+      "@typescript-eslint/ban-ts-comment": "off"
     }
   }
 ];

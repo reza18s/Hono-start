@@ -1,10 +1,9 @@
 import { Hono } from "hono";
-import { logger } from "hono/logger";
 import userRouter from "./routes/userRoutes";
 import mongoose from "mongoose";
 
-const app = new Hono();
-app.use("*", logger());
+export const app = new Hono();
+// app.use("*", logger());
 // const io = new Server(serve({ fetch: app.fetch, port: 3000 }));
 const DB = process.env.DB!;
 mongoose.connect(DB).then(() => {

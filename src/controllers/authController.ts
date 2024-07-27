@@ -1,37 +1,57 @@
 import { User } from "../Models/userModel";
-import { IC, IUserDocument } from "../types";
-import { decode, sign, verify } from "hono/jwt";
+import { IC, IUserDocument, Role } from "../types";
+import { sign, verify } from "hono/jwt";
 import { HTTPException } from "hono/http-exception";
-import { setCookie } from "hono/cookie";
-import { signupObject } from "../validator";
-export const createToken = async (c: IC, user: IUserDocument) => {
-  const payload = {
-    sub: "user123",
-    role: "user",
-    exp: Math.floor(Date.now() / 1000) + 60 * 60 // Token expires in 60 minutes
-  };
-  const secret = process.env.JWT_SECRET!;
-  const token = await sign(payload, secret);
-  setCookie(c, "jwt", token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV == "development" ? false : true,
-    expires: new Date(
-      Date.now() + +process.env.COOKIES_EXPIRES! * 24 * 60 * 60 * 1000
-    )
-  });
-  return c.json({
-    status: "success",
-    token,
-    data: {
-      user
-    }
-  });
+import { getCookie, setCookie } from "hono/cookie";
+import {
+  forgotPasswordObject,
+  resetPasswordObject,
+  signinObject,
+  signupObject,
+  updatePasswordObject
+} from "../validator";
+import { Next } from "hono";
+import { CryptoHasher } from "bun";
+import { StatusCode } from "hono/utils/http-status";
+export const createToken = async (
+  c: IC,
+  user: IUserDocument,
+  statusCode: StatusCode = 200
+) => {
+  try {
+    const payload = {
+      id: user._id,
+      sub: "user123",
+      role: "user",
+      exp: Math.floor(Date.now() / 1000) + 60 * 60 // Token expires in 60 minutes
+    };
+    const secret = process.env.JWT_SECRET!;
+    const token = await sign(payload, secret);
+    setCookie(c, "jwt", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV == "development" ? false : true,
+      expires: new Date(
+        Date.now() + +process.env.COOKIES_EXPIRES! * 24 * 60 * 60 * 1000
+      )
+    });
+    return c.json(
+      {
+        status: "success",
+        token,
+        data: {
+          user
+        }
+      },
+      statusCode
+    );
+  } catch (error) {
+    throw new HTTPException(401, { res: c.json({ error: error }) });
+  }
 };
 
 export const signup = async (c: IC) => {
   try {
     const body = signupObject.parse(await c.req.json());
-    console.log(body);
     const user: IUserDocument = await User.create({
       name: body.name,
       email: body.email,
@@ -39,9 +59,7 @@ export const signup = async (c: IC) => {
       passwordConfirm: body.passwordConfirm,
       passwordChangedAt: Date.now()
     });
-    return c.json({
-      status: "success"
-    });
+    return createToken(c, user, 201);
   } catch (error) {
     throw new HTTPException(401, { res: c.json({ error: error }) });
   }
@@ -49,161 +67,153 @@ export const signup = async (c: IC) => {
 
 export const signin = async (c: IC) => {
   try {
-    const { email, password } = signupObject.parse(await c.req.json());
-
-    if (!password || !email) {
-      throw new HTTPException(401, {
-        res: c.json({ message: "Please provide email and password" })
-      });
-    }
+    const { email, password } = signinObject.parse(await c.req.json());
     const user = await User.findOne({ email }).select("+password");
     //create Express Password Checker
     if (!user || !(await user.correctPassword(password, user.password))) {
-      throw new HTTPException(401, {
-        res: c.json({ message: "incorrect email/password" })
-      });
+      throw { message: "incorrect email/password" };
     }
     return createToken(c, user);
-    // return c.json({ status: "success" });
   } catch (error) {
     throw new HTTPException(401, { res: c.json({ error: error }) });
   }
 };
 
-// export const protect = catchAsync(async (req: IRequest, res, next) => {
-//   let token: string;
-//   if (
-//     req.headers.authorization &&
-//     req.headers.authorization.startsWith("Bearer")
-//   ) {
-//     token = req.headers.authorization.split(" ")[1];
-//   }
-//   if (!token) {
-//     return next(
-//       new ErrorHandler("Your not logged in! please log in to get access ", 400)
-//     );
-//   }
-//   const decoded = await verify(token, process.env.JWT_SECRET);
-//   const currentUser = await User.findById((decoded as IDecoded).id);
+export const protect = async (c: IC, next: Next) => {
+  try {
+    let token: string | undefined;
+    if (
+      c.req.header("authorization") &&
+      c.req.header("authorization")?.startsWith("Bearer")
+    ) {
+      token = c.req.header("authorization")?.split(" ")[1];
+    } else {
+      token = getCookie(c, "jwt");
+    }
+    if (!token) {
+      throw { message: "token does ot exist" };
+    }
+    const decoded = await verify(token, process.env.JWT_SECRET!);
+    const currentUser = await User.findById(decoded.id);
 
-//   if (!currentUser) {
-//     return next(
-//       new ErrorHandler(
-//         "The user belonging to this token does no longer exist",
-//         400
-//       )
-//     );
-//   }
+    if (!currentUser) {
+      throw { message: "user does not exist anymore" };
+    }
 
-//   if (currentUser.changedPasswordAfter((decoded as IDecoded).iat)) {
-//     next(
-//       new ErrorHandler(
-//         "User recently changed password! Please log in again.",
-//         404
-//       )
-//     );
-//   }
-//   req.user = currentUser;
-//   next();
-// });
+    if (currentUser.changedPasswordAfter(decoded.iat!)) {
+      throw { message: "User recently changed password! Please log in again." };
+    }
+    // @ts-ignore
+    c.req["user"] = currentUser;
+    await next();
+  } catch (error) {
+    throw new HTTPException(401, {
+      res: c.json({
+        error
+      })
+    });
+  }
+};
 
-// export const restrictTo = (...role: Role[]) => {
-//   return (req: IRequest, res: Response, next: NextFunction) => {
-//     if (!role.includes(req.user.role)) {
-//       return next(
-//         new ErrorHandler(
-//           "you don't have permission to preform this action",
-//           403
-//         )
-//       );
-//     }
-//     next();
-//   };
-// };
-// export const forgotPassword = catchAsync(
-//   async (req: IRequest, res: Response, next: NextFunction) => {
-//     const currentUser = await User.findOne({ email: req.body.email });
-//     if (!currentUser) {
-//       return next(
-//         new ErrorHandler("There is no user with that email address.", 400)
-//       );
-//     }
+export const restrictTo = (...role: Role[]) => {
+  return async (c: IC, next: Next) => {
+    // @ts-ignore
+    if (!role.includes(c.req.user.role)) {
+      throw new HTTPException(403, {
+        res: c.json({
+          message: "you don't have permission to preform this action"
+        })
+      });
+    }
+    await next();
+  };
+};
+export const forgotPassword = async (c: IC) => {
+  try {
+    const body = forgotPasswordObject.parse(await c.req.json());
+    const currentUser = await User.findOne({ email: body.email });
+    if (!currentUser) {
+      throw { message: "There is no user with that email address." };
+    }
 
-//     const resetToken = currentUser.createPasswordRestToken();
-//     await currentUser.save();
+    const resetToken = currentUser.createPasswordRestToken();
+    await currentUser.save();
 
-//     const resetURL = `${req.protocol}://${req.get(
-//       "host"
-//     )}/api/v1/users/resetPassword/${resetToken}`;
-//     try {
-//       // const message = `Forgot your password? Submit a PATCH request with your new password and passwordConfirm to: ${resetURL}.\nIf you didn't forget your password, please ignore this email!`;
-//       // await sendEmail({
-//       //    email: currentUser.email,
-//       //    subject: "Your password reset token (valid for 10min)",
-//       //    message,
-//       // });
-//       res.status(200).json({
-//         status: "success",
-//         message: "Token sent to email!",
-//         resetURL
-//       });
-//     } catch (error) {
-//       currentUser.passwordRestToken = undefined;
-//       currentUser.passwordRestExpires = undefined;
-//       await currentUser.save();
+    const resetURL = `${process.env.PUBLIC_URL}/api/v1/users/resetpassword/${resetToken}`;
+    try {
+      return c.json({
+        status: "success",
+        message: "Token sent to email!"
+      });
+    } catch (error) {
+      // @ts-ignore
+      currentUser.passwordRestToken = undefined;
+      // @ts-ignore
+      currentUser.passwordRestExpires = undefined;
+      await currentUser.save();
+      throw error;
+    }
+  } catch (error) {
+    throw new HTTPException(500, {
+      res: c.json({
+        error
+      })
+    });
+  }
+};
+export const resetPassword = async (c: IC) => {
+  try {
+    const body = resetPasswordObject.parse(await c.req.json());
+    const token = c.req.param("token");
+    const tokenHash = new CryptoHasher("sha256") // @ts-ignore
+      .update(token)
+      .digest("hex");
+    const currentUser = await User.findOne({
+      passwordRestToken: tokenHash,
+      passwordRestExpires: { $gt: Date.now() }
+    });
 
-//       return next(
-//         new ErrorHandler(
-//           "There was an error sending the email. Try again later!",
-//           404
-//         )
-//       );
-//     }
-//   }
-// );
-// export const resetPassword = catchAsync(
-//   async (req: IRequest, res: Response, next: NextFunction) => {
-//     const tokenHash = createHash("sha256")
-//       .update(req.params.token as string)
-//       .digest("hex");
-//     const currentUser = await User.findOne({
-//       passwordRestToken: tokenHash,
-//       passwordRestExpires: { $gt: Date.now() }
-//     });
+    if (!currentUser) {
+      throw "Token is invalid or has expired";
+    }
+    currentUser.password = body.password;
+    currentUser.passwordConfirm = body.passwordConfirm;
+    // @ts-ignore
+    currentUser.passwordRestToken = undefined;
+    // @ts-ignore
+    currentUser.passwordRestExpires = undefined;
+    await currentUser.save();
 
-//     if (!currentUser) {
-//       return next(
-//         new ErrorHandler(
-//           "The user belonging to this token does no longer exist",
-//           400
-//         )
-//       );
-//     }
-//     currentUser.password = req.body.password;
-//     currentUser.passwordConfirm = req.body.passwordConfirm;
-//     currentUser.passwordRestToken = undefined;
-//     currentUser.passwordRestExpires = undefined;
-//     await currentUser.save();
+    return createToken(c, currentUser);
+  } catch (error) {
+    throw new HTTPException(401, {
+      res: c.json({ error: error })
+    });
+  }
+};
 
-//     createToken(res, 201, currentUser);
-//   }
-// );
-
-// export const updatePassword = catchAsync(
-//   async (req: IRequest, res: Response, next: NextFunction) => {
-//     const currentUser = await User.findById(req.user.id).select("+password");
-//     if (
-//       !currentUser ||
-//       !(await currentUser.correctPassword(
-//         req.body.password,
-//         currentUser.password
-//       ))
-//     ) {
-//       return next(new ErrorHandler("incorrect email/password", 401));
-//     }
-//     currentUser.password = req.body.newPassword;
-//     currentUser.passwordConfirm = req.body.newPasswordConfirm;
-//     await currentUser.save();
-//     createToken(res, 201, currentUser);
-//   }
-// );
+export const updatePassword = async (c: IC) => {
+  try {
+    const body = updatePasswordObject.parse(await c.req.json());
+    if (body.newPassword === body.password) {
+      throw { message: "new password can't be same as old" };
+    }
+    // @ts-ignore
+    const currentUser = await User.findById(c.req.user.id).select("+password");
+    if (
+      !currentUser ||
+      !currentUser.password ||
+      !(await currentUser.correctPassword(body.password, currentUser.password))
+    ) {
+      throw { message: "incorrect email/password" };
+    }
+    currentUser.password = body.newPassword;
+    currentUser.passwordConfirm = body.newPasswordConfirm;
+    await currentUser.save();
+    return createToken(c, currentUser);
+  } catch (error) {
+    throw new HTTPException(401, {
+      res: c.json({ error: error })
+    });
+  }
+};
